@@ -33,6 +33,7 @@ logger.info('Database initialization...')
 SessionLocal = DB_INITIALIZER.init_db(cfg.DB_DNS)
 logger.info('Database initialized...')
 
+#config
 API_URL = cfg.API_URL.split(":")
 crud.api.configure(API_URL[0], API_URL[1])
 crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10)
@@ -43,6 +44,8 @@ crud.styles.add_new(
     positive="masterpiece, absurdres, highres, {}, award winning, ultra detailed, 8k, ultra resolution",
     negative="(disfigured:1.2), (worst quality, low quality:1.4), {}, (lowres), (deformed, distorted:1.3), bad hands, missing fingers, text, watermark, frame, poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, (mutated hands and fingers:1.3), mutant, disconnected limbs, mutation, mutated, ugly, disgusting, blurry"
 )
+
+
 
 #decorator
 def db_session(func):

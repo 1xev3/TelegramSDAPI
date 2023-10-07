@@ -22,7 +22,12 @@ styles = StyleFactory()
 
 
 
-IMAGE_KEYBOARD = KBCustom(["⬆️ Апскейл","↪️ Повтор","♻️ Варианты","📜 DeepBooru", "✨ Стиль"],["img:upscale:2","img:sameprompt","img:variants","img:deepbooru","img:style"],2)
+IMAGE_KEYBOARD = KBCustom(["⬆️ Апскейл","↪️ Повтор","♻️ Варианты","📜 DeepBooru", "✨ Стиль"],
+                          [cb_models.ImageOptions(mode="upscale").pack(),
+                           cb_models.ImageOptions(mode="sameprompt").pack(),
+                           cb_models.ImageOptions(mode="variants").pack(),
+                           cb_models.ImageOptions(mode="deepboru").pack(),
+                           cb_models.ImageOptions(mode="style").pack()],2)
 
 def get_user(db: Session, telegram_id: int) -> models.User:
     user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
@@ -35,6 +40,7 @@ def get_user(db: Session, telegram_id: int) -> models.User:
         db.commit()
     
     return user
+
 
 ############
 # Commands #
@@ -57,24 +63,40 @@ async def start_command(msg:Message, db:Session):
 
     await msg.answer("Hello!")
 
-
+def settings_keyboard():
+    kb = [
+        [
+            IKB(text="Соотношение сторон", callback_data=cb_models.MenuOptions(mode="scale").pack()), 
+            IKB(text="Количество", callback_data=cb_models.MenuOptions(mode="count").pack())
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 async def config_command(msg:Message, db:Session):
     user = get_user(db, msg.from_user.id)
 
-    kb = [
-        [IKB(text="Соотношение сторон", callback_data=cb_models.MenuOptions(mode="scale").pack()), IKB(text="Количество", callback_data="menu_count")],
-    ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=kb)
+    markup = settings_keyboard()
 
-    await msg.answer(f"Config for user [{msg.from_user.id}]", reply_markup=keyboard, )
+    await msg.answer(f"Config for user [{msg.from_user.id}]", reply_markup=markup )
 
 async def config_command_callaback(msg: CallbackQuery, callback_data: cb_models.MenuOptions, db: Session):
     user = get_user(db, msg.from_user.id)
 
-    print(callback_data.mode)
+    mode = callback_data.mode
+    if mode == "root":
+        markup = settings_keyboard()
+        await msg.message.answer("Главное меню", reply_markup=markup)
+    elif mode == "scale":
+        markup = InlineKeyboardMarkup(inline_keyboard=KBCustom(
+            ["Reverse", "Назад"],
+            [
+                cb_models.SetOptions(mode="scale", value="reverse").pack(),
+                cb_models.MenuOptions(mode="root").pack()
+            ], 
+        1))
+        await msg.message.answer("Scale", reply_markup=markup)
 
-    await msg.answer("texxt")
+    await msg.answer()
 
 
         

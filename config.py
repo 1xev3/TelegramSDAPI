@@ -8,7 +8,7 @@ class Config(BaseSettings):
     DB_DNS: str = Field(default = "sqlite:///database.db")
     TOKEN: str = Field(description="Telegram bot token")
     API_URL: str = Field(description="SDWebUI URL")
-    QUEUE_LIMIT: int = Field(description="Limit for queue", default=4)
+    QUEUE_LIMIT: int = Field(description="Limit for user queue", default=4)
 
     @classmethod
     def settings_customise_sources(

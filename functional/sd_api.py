@@ -202,7 +202,7 @@ class APIQueue():
         if user_id in self.custom_limits:
             max_count = self.custom_limits[user_id]
 
-        if self.counts[user_id] > max_count:
+        if self.counts[user_id] >= max_count:
             raise RuntimeError("Максимальное количество одновременных запросов достигнуто")
         
         self.counts[user_id] += 1
