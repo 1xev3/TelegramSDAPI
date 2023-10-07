@@ -36,6 +36,7 @@ logger.info('Database initialized...')
 #config
 API_URL = cfg.API_URL.split(":")
 crud.api.configure(API_URL[0], API_URL[1])
+crud.api.update_models()
 crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10)
 
 #styles register
@@ -67,16 +68,19 @@ rp = Router()
 @rp.message(CommandStart())
 @db_session
 async def command_start_handler(msg: Message, db:Session) -> None:
+    logger.info(f"Recieved start command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.start_command(msg, db)
 
 @rp.message(Command("settings"))
 @db_session
 async def _(msg: Message, db:Session) -> None:
+    logger.info(f"Recieved settings command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.config_command(msg, db)
 
-@rp.message()
+@rp.message(F.text) #yep any message will cause generation
 @db_session
 async def echo_handler(msg: types.Message, db:Session) -> None:
+    logger.info(f"Recieved generation command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.any_msg(msg, db)
 
 @rp.callback_query(cb_models.MenuOptions.filter(F.mode == "scale"))

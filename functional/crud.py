@@ -4,6 +4,8 @@ from functools import wraps
 from sqlalchemy.orm import Session
 from database import models
 
+from time import time
+from aiogram.utils.text_decorations import markdown_decoration as md
 from aiogram.types import InlineKeyboardButton as IKB, InlineKeyboardMarkup, Message, CallbackQuery, BufferedInputFile
 
 from functional.sd_api import WebUIApi, APIQueue, StyleFactory
@@ -98,27 +100,31 @@ async def config_command_callaback(msg: CallbackQuery, callback_data: cb_models.
 
     await msg.answer()
 
-
         
 async def any_msg(msg:Message, db:Session):
     user = get_user(db, msg.from_user.id)
 
     settings = user.settings
 
-    text = msg.text or msg.caption
+    text = msg.text or msg.caption or ""
     if len(text) < 1:
         await msg.answer("Please, provide text for generation")
 
     style = styles.stylize(settings["quality_tag"], text)
 
-    async def txt2img():
-        await msg.answer(f"Started generation\nPositive: `{style.positive}`\nNegative: `{style.negative}`", parse_mode="MarkdownV2")
+    start_time = time()
+        
+    async def process():
+        # await msg.answer(f"Started generation\nPositive: `{style.positive}`\nNegative: `{style.negative}`", parse_mode="MarkdownV2")
+
+        global start_time
+        start_time = time()
 
         params = txt2img_params()
         params.prompt = style.positive
         params.negative_prompt = style.negative
         params.steps = settings["steps"]
-        params.batch_size = settings["n_iter"]
+        params.batch_size = 4 #settings["n_iter"]
         params.sampler_name = settings["sampler"]
         
         try:
@@ -136,16 +142,41 @@ async def any_msg(msg:Message, db:Session):
                 seed = result1.info['all_seeds'][it]
                 caption = f"`{style.full_clear}` `\[seed:{seed}\]`"
                 caption = caption[:1023] if len(caption) > 1023 else caption
+            
                 await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), "txt2img_result.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
                 img.close()
                 it += 1
-            
+        
         except Exception as E:
             await msg.answer(f"Error: {E}")
 
+    update_message = await msg.answer("Generating...")
+    async def update():
+        status = await api.get_progress()
 
-    await queue.put(user.telegram_id, txt2img())
+        progress = status.progress
+        negative_progress = 1 - progress
+        
+        waiting = (progress == 0.0)
+        progress_str = f"`{int(progress*100)}\%`" if (not waiting) else "`Waiting`"
+        
+        count = 25
+        progress_bar = f'\[{"━"*int(progress*count)}{ md.spoiler("━"*int(negative_progress*count)) }\]'
 
-    
+        message = f"{md.quote(update_message.text)} "\
+                  f"{progress_str}\n"\
+                  f"{progress_bar if not waiting else ''}\n"
+        await update_message.edit_text(message, parse_mode="MarkdownV2")
 
-    await msg.answer(msg.text)
+    async def end():
+        execution_time = time() - start_time
+        await update_message.edit_text(f"Done in `{int(execution_time)}` seconds", parse_mode="MarkdownV2")
+
+
+    await queue.put( queue.Params(
+        user_id=user.telegram_id,
+        func=process(),
+        update_func=update, #no ()! only coroutine fabric!
+        end_func=end(),
+    ))
+

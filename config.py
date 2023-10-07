@@ -7,7 +7,7 @@ from pydantic import Field
 class Config(BaseSettings):
     DB_DNS: str = Field(default = "sqlite:///database.db")
     TOKEN: str = Field(description="Telegram bot token")
-    API_URL: str = Field(description="SDWebUI URL")
+    API_URL: str = Field(description="SDWebUI URL", default="localhost:7860")
     QUEUE_LIMIT: int = Field(description="Limit for user queue", default=4)
 
     @classmethod
