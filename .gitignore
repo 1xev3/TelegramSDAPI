@@ -3,4 +3,4 @@
 **/.env
 **/__pycache__/*
 database.db
-.vscode/*
+.vscode/
