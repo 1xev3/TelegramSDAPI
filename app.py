@@ -19,8 +19,9 @@ from callbacks import models as cb_models
 import functional.crud as crud
 
 ## INIT ##
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO,stream=stdout)
+logger = logging.getLogger("telebot")
+logging.basicConfig(level=logging.INFO,stream=stdout, 
+                    format="[%(levelname)s][%(name)s][%(filename)s, line %(lineno)d]: %(message)s")
 
 logger.info("Configuration loading...")
 cfg: config.Config = config.load_config(_env_file='.env')
@@ -37,7 +38,7 @@ logger.info('Database initialized...')
 API_URL = cfg.API_URL.split(":")
 crud.api.configure(API_URL[0], API_URL[1])
 crud.api.update_models()
-crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10)
+crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10,1)
 
 #styles register
 crud.styles.add_new(
@@ -88,6 +89,11 @@ async def echo_handler(msg: types.Message, db:Session) -> None:
 async def _(query: CallbackQuery, callback_data: cb_models.MenuOptions, db:Session):
     await crud.config_command_callaback(query, callback_data, db)
 
+@rp.error()
+async def error_handler(event: ErrorEvent):
+    logger.critical("Critical error caused by %s", event.exception, exc_info=True)
+    # do something with error
+    ...
 
 
 async def main():

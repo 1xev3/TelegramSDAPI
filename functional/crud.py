@@ -1,4 +1,4 @@
-import asyncio
+import asyncio, logging
 from functools import wraps
 
 from sqlalchemy.orm import Session
@@ -12,12 +12,16 @@ from functional.sd_api import WebUIApi, APIQueue, StyleFactory
 from functional.sd_api import txt2img_params, img2img_params
 
 from .shared import ImageToBytes, KBCustom
+from . import errors
+
+from dataclasses import dataclass
 
 from callbacks import models as cb_models
 
 
 
 
+logger = logging.getLogger("telebot")
 api = WebUIApi("", "") #configured in app.py
 queue = APIQueue()
 styles = StyleFactory()
@@ -36,7 +40,7 @@ def get_user(db: Session, telegram_id: int) -> models.User:
     
     #create new user
     if not user:
-        print("Create new user!")
+        logger.info(f"Created new user [{telegram_id}]")
         user = models.User(telegram_id=telegram_id)
         db.add(user)
         db.commit()
@@ -112,71 +116,87 @@ async def any_msg(msg:Message, db:Session):
 
     style = styles.stylize(settings["quality_tag"], text)
 
-    start_time = time()
-        
-    async def process():
-        # await msg.answer(f"Started generation\nPositive: `{style.positive}`\nNegative: `{style.negative}`", parse_mode="MarkdownV2")
+    #command processor
+    class __processor():
+        def __init__(self, initial_message):
+            #shared parameters
+            self.start_time = time()
+            self.update_message = initial_message
 
-        global start_time
-        start_time = time()
+        #prevent message is not modified error
+        async def __update_message(self, text):
+            if self.update_message.text != text:
+                self.update_message = await self.update_message.edit_text(text, parse_mode="MarkdownV2")
 
-        params = txt2img_params()
-        params.prompt = style.positive
-        params.negative_prompt = style.negative
-        params.steps = settings["steps"]
-        params.batch_size = 4 #settings["n_iter"]
-        params.sampler_name = settings["sampler"]
-        
-        try:
-            result1 = await api.txt2img(params)
+        async def process(self):
+            self.start_time = time()
+            self.update_message = await msg.answer("Generation...")
 
-            if not result1:
-                await msg.answer("No data from server?")
-                return
-
-            kb = IMAGE_KEYBOARD
-            markup = InlineKeyboardMarkup(inline_keyboard=kb)
-
-            it = 0
-            for img in result1.images:
-                seed = result1.info['all_seeds'][it]
-                caption = f"`{style.full_clear}` `\[seed:{seed}\]`"
-                caption = caption[:1023] if len(caption) > 1023 else caption
+            params = txt2img_params()
+            params.prompt = style.positive
+            params.negative_prompt = style.negative
+            params.steps = settings["steps"]
+            params.batch_size = 4 #settings["n_iter"]
+            params.sampler_name = settings["sampler"]
             
-                await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), "txt2img_result.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
-                img.close()
-                it += 1
+            try:
+                result1 = await api.txt2img(params)
+
+                if not result1:
+                    await msg.answer("No data from server?")
+                    return
+
+                kb = IMAGE_KEYBOARD
+                markup = InlineKeyboardMarkup(inline_keyboard=kb)
+
+                it = 0
+                for img in result1.images:
+                    seed = result1.info['all_seeds'][it]
+                    caption = f"`{style.full_clear}`"
+                    caption = caption[:1023] if len(caption) > 1023 else caption
+                
+                    await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
+                    img.close()
+                    it += 1
+            
+            except Exception as E:
+                await msg.answer(f"Error: {E}")
+
         
-        except Exception as E:
-            await msg.answer(f"Error: {E}")
+        async def update(self):
+            status = await api.get_progress()
 
-    update_message = await msg.answer("Generating...")
-    async def update():
-        status = await api.get_progress()
+            progress = status.progress
+            negative_progress = 1 - progress
+            
+            waiting = (progress == 0.0)
+            progress_str = f"`{int(progress*100)}\%`" if (not waiting) else "`Waiting`"
+            
+            count = 25
+            progress_bar = f'\[{"━"*int(progress*count)}{ md.spoiler("━"*int(negative_progress*count)) }\]'
 
-        progress = status.progress
-        negative_progress = 1 - progress
-        
-        waiting = (progress == 0.0)
-        progress_str = f"`{int(progress*100)}\%`" if (not waiting) else "`Waiting`"
-        
-        count = 25
-        progress_bar = f'\[{"━"*int(progress*count)}{ md.spoiler("━"*int(negative_progress*count)) }\]'
+            message = f"{md.quote('Generating...')} "\
+                    f"{progress_str}\n"\
+                    f"{progress_bar if not waiting else ''}\n"
+            await self.__update_message(message)
 
-        message = f"{md.quote(update_message.text)} "\
-                  f"{progress_str}\n"\
-                  f"{progress_bar if not waiting else ''}\n"
-        await update_message.edit_text(message, parse_mode="MarkdownV2")
+        async def end(self):
+            execution_time = time() - self.start_time
+            await self.__update_message(f"Done in `{int(execution_time)}` seconds")
 
-    async def end():
-        execution_time = time() - start_time
-        await update_message.edit_text(f"Done in `{int(execution_time)}` seconds", parse_mode="MarkdownV2")
+    #register
+    update_message = await msg.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
+    proc = __processor(initial_message=update_message)
 
-
-    await queue.put( queue.Params(
-        user_id=user.telegram_id,
-        func=process(),
-        update_func=update, #no ()! only coroutine fabric!
-        end_func=end(),
-    ))
+    try:
+        #put in queue
+        await queue.put( queue.Params(
+            user_id=user.telegram_id,
+            func=proc.process,
+            update_func=proc.update, #no ()! only coroutine fabric!
+            end_func=proc.end,
+        ))
+    except errors.MaxQueueReached as E:
+        await update_message.edit_text("You reached queue limit. Please wait before using it again")
+        logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 

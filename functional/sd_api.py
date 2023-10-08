@@ -1,16 +1,23 @@
 import aiohttp, requests
 import asyncio
 
+from aiogram.exceptions import TelegramBadRequest
 
-import json
+
+import json, io, base64, logging
 from PIL import Image
-import io
-import base64
 
 from typing import Coroutine, Optional
+from pydantic import ValidationError
 from dataclasses import dataclass
 
 from .api_models import txt2img_params, img2img_params, SDModel, SDProgress
+
+from . import errors
+
+
+logger = logging.getLogger("telebot")
+
 
 def b64_img(image: Image):
     buffered = io.BytesIO()
@@ -20,13 +27,18 @@ def b64_img(image: Image):
 
 
 class StyleFactory():
-    styles = {}
+    def __init__(self):
+        self.styles = {}
+        self.quality_tags: self.Style("", "", "", "")
+    
 
     @dataclass
     class Style():
+        #full prompts
         positive: str
         negative: str
 
+        #without added style
         positive_clear: str
         negative_clear: str
 
@@ -41,6 +53,9 @@ class StyleFactory():
             neg = ""
             if self.negative_clear != "": neg = "///"+self.negative_clear
             return f"{self.positive_clear}{neg}"
+        
+    def set_quality_tags(self, positive:str, negative:str):
+        self.quality_tags = self.Style(positive, negative, "", "")
 
     def add_new(self, name:str, positive:str, negative:str):
         self.styles[name] = {
@@ -64,14 +79,8 @@ class StyleFactory():
 
 class APIQueue():
     def __init__(self, def_limit = 4, custom_limits:dict = {}, max_tasks = 10, update_sleep = 2):
+        self.busy = False
         self.configure(def_limit, custom_limits, max_tasks, update_sleep)
-
-    @dataclass
-    class Params():
-        user_id: str
-        func: Coroutine
-        update_func: Coroutine = None
-        end_func: Coroutine = None
 
     def configure(self, def_limit = 4, custom_limits:dict = {}, max_tasks = 10, update_sleep = 2):
         self.limit = def_limit
@@ -80,6 +89,22 @@ class APIQueue():
 
         self.queue = asyncio.Queue(max_tasks)
         self.counts = {}
+
+    @dataclass
+    class Params():
+        user_id: str
+        func: Coroutine
+        update_func: Coroutine = None
+        end_func: Coroutine = None
+
+    def size(self) -> int:
+        return self.queue.qsize()
+    
+    def human_size(self) -> int:
+        count = self.size()+1
+        if self.busy:
+            count += 1
+        return count
         
     async def __get_one(self) -> Params:
         return await self.queue.get()
@@ -90,7 +115,7 @@ class APIQueue():
             try:
                 await update_coro() #create new coro and run it
             except Exception as E:
-                print(f"[ERROR] Error occured in SD_API: {E}")
+                logger.error(f"Error occured in SD_API: {E}")
                 break
             
             finally:
@@ -107,25 +132,29 @@ class APIQueue():
             update_coro = params.update_func
             end_func = params.end_func
 
-            # Если есть задача update_coro, создаем ее только один раз
+            # Update worker
             if update_coro and update_task is None:
                 update_task = asyncio.create_task(self.__process_update(update_coro))
 
             try:
-                await coro
+                self.busy = True
+                await coro()
             finally:
+                self.busy = False
+                self.queue.task_done() #end task
+
+                #check user counter
                 if user_id in self.counts:
                     self.counts[user_id] -= 1
                     if self.counts[user_id] < 1:
                         del self.counts[user_id]
-                self.queue.task_done()
 
                 if update_task is not None:
                     update_task.cancel()
                     update_task = None
 
                 if end_func is not None:
-                    await end_func
+                    await end_func()
 
     async def put(self, params:Params):
         user_id = params.user_id
@@ -138,7 +167,7 @@ class APIQueue():
             max_count = self.custom_limits[user_id]
 
         if self.counts[user_id] >= max_count:
-            raise RuntimeError("Максимальное количество одновременных запросов достигнуто")
+            raise errors.MaxQueueReached("Максимальное количество одновременных запросов достигнуто")
         
         self.counts[user_id] += 1
         await self.queue.put(params)
@@ -176,14 +205,18 @@ class WebUIApi():
         models = response.json()
         result = []
         for v in models:
-            result.append(SDModel(
-                title=v["title"],
-                model_name=v["model_name"],
-                hash=v["hash"],
-                sha256=v["sha256"],
-                filename=v["filename"],
-                config=v["config"]
-            ))
+            try:
+                model = SDModel(
+                    title=v["title"],
+                    mdl_name=v["model_name"],
+                    hash=v["hash"],
+                    sha256=v["sha256"],
+                    filename=v["filename"],
+                    config=v["config"]
+                )
+                result.append(model)
+            except ValidationError as E:
+                logger.error(f"Error validating model {v['title'] or 'Undefined'}. Maybe model broken?\n{E}")
         return result
     
     def update_models(self):
@@ -224,7 +257,7 @@ class WebUIApi():
     
     async def get_progress(self, skip_current_image = True) -> SDProgress:
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            async with session.get(url=f'{self.baseurl}/progress',params={"skip_current_image": "True"}) as response:
+            async with session.get(url=f'{self.baseurl}/progress',params={"skip_current_image": str(skip_current_image)}) as response:
                 return SDProgress( **(await response.json()) )
     
     async def txt2img(self, params: txt2img_params) -> WebUIApiResult:
@@ -232,4 +265,11 @@ class WebUIApi():
 
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.post(url=f'{self.baseurl}/txt2img', json=payload) as response:
+                return await self._to_api_result(response)
+            
+    async def img2img(self, params: img2img_params) -> WebUIApiResult:
+        payload = params.to_dict()
+
+        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            async with session.post(url=f'{self.baseurl}/img2img', json=payload) as response:
                 return await self._to_api_result(response)

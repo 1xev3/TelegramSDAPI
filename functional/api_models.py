@@ -3,7 +3,7 @@ from typing import Optional
 
 class SDModel(BaseModel):
     title: str
-    model_name: str
+    mdl_name: str
     hash: str
     sha256: str
     filename: str
@@ -106,7 +106,7 @@ class img2img_params():
     refiner_switch_at = 0
     disable_extra_networks = False
     comments = {}
-    init_images = []
+    init_images: list[str] = []
     resize_mode = 0
     image_cfg_scale = 0
     mask = ""
