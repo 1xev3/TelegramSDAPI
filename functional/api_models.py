@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional
+from functional.shared import ImageToBase64
+from PIL import Image
 
 class SDModel(BaseModel):
     title: str
@@ -74,6 +76,7 @@ class txt2img_params():
         return {attr: getattr(self, attr) for attr in dir(self) if not callable(getattr(self, attr)) and not attr.startswith("__")}
 
 class img2img_params():
+    init_images = []
     prompt = ""
     negative_prompt = ""
     styles = []
@@ -106,10 +109,9 @@ class img2img_params():
     refiner_switch_at = 0
     disable_extra_networks = False
     comments = {}
-    init_images: list[str] = []
     resize_mode = 0
     image_cfg_scale = 0
-    mask = ""
+    mask = None
     mask_blur_x = 4
     mask_blur_y = 4
     mask_blur = 0
@@ -128,5 +130,9 @@ class img2img_params():
     alwayson_scripts = {}
 
     def to_dict(self):
+        self.init_images = [ImageToBase64(x) for x in self.init_images]
+        if self.mask is not None:
+            self.mask = ImageToBase64(self.mask)
+
         return {attr: getattr(self, attr) for attr in dir(self) if not callable(getattr(self, attr)) and not attr.startswith("__")}
     

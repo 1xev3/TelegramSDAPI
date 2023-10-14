@@ -1,8 +1,6 @@
 import aiohttp, requests
 import asyncio
 
-from aiogram.exceptions import TelegramBadRequest
-
 
 import json, io, base64, logging
 from PIL import Image
@@ -17,13 +15,6 @@ from . import errors
 
 
 logger = logging.getLogger("telebot")
-
-
-def b64_img(image: Image):
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_base64 = 'data:image/png;base64,' + str(base64.b64encode(buffered.getvalue()), 'utf-8')
-    return img_base64
 
 
 class StyleFactory():
@@ -71,11 +62,15 @@ class StyleFactory():
         if len(splited) > 1:
             neg_prompt = splited[1]
 
+        #since telegram has limit in caption with 1024
+        prompt = prompt[:512] if len(prompt) > 512 else prompt
+        neg_prompt = neg_prompt[:510] if len(neg_prompt) > 510 else neg_prompt
+
         pos = self.styles[style_name]["positive"].format(prompt)
         neg = self.styles[style_name]["negative"].format(neg_prompt)
 
         return self.Style(pos, neg, prompt, neg_prompt)
-        
+
 
 class APIQueue():
     def __init__(self, def_limit = 4, custom_limits:dict = {}, max_tasks = 10, update_sleep = 2):
@@ -92,7 +87,7 @@ class APIQueue():
 
     @dataclass
     class Params():
-        user_id: str
+        uid: str
         func: Coroutine
         update_func: Coroutine = None
         end_func: Coroutine = None
@@ -127,7 +122,7 @@ class APIQueue():
 
         while True:
             params = await self.__get_one()
-            user_id = params.user_id
+            uid = params.uid
             coro = params.func
             update_coro = params.update_func
             end_func = params.end_func
@@ -138,38 +133,38 @@ class APIQueue():
 
             try:
                 self.busy = True
-                await coro()
+                result = await coro()
             finally:
                 self.busy = False
                 self.queue.task_done() #end task
 
                 #check user counter
-                if user_id in self.counts:
-                    self.counts[user_id] -= 1
-                    if self.counts[user_id] < 1:
-                        del self.counts[user_id]
+                if uid in self.counts:
+                    self.counts[uid] -= 1
+                    if self.counts[uid] < 1:
+                        del self.counts[uid]
 
                 if update_task is not None:
                     update_task.cancel()
                     update_task = None
 
                 if end_func is not None:
-                    await end_func()
+                    await end_func(result)
 
     async def put(self, params:Params):
-        user_id = params.user_id
+        uid = params.uid
 
-        if user_id not in self.counts:
-            self.counts[user_id] = 0
+        if uid not in self.counts:
+            self.counts[uid] = 0
 
         max_count = self.limit
-        if user_id in self.custom_limits:
-            max_count = self.custom_limits[user_id]
+        if uid in self.custom_limits:
+            max_count = self.custom_limits[uid]
 
-        if self.counts[user_id] >= max_count:
+        if self.counts[uid] >= max_count:
             raise errors.MaxQueueReached("Максимальное количество одновременных запросов достигнуто")
         
-        self.counts[user_id] += 1
+        self.counts[uid] += 1
         await self.queue.put(params)
 
 
@@ -218,6 +213,10 @@ class WebUIApi():
             except ValidationError as E:
                 logger.error(f"Error validating model {v['title'] or 'Undefined'}. Maybe model broken?\n{E}")
         return result
+
+    #TODO    
+    def __recieve_samplers(self) -> list:
+        pass
     
     def update_models(self):
         self.models = self.__recieve_models()
@@ -259,6 +258,7 @@ class WebUIApi():
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.get(url=f'{self.baseurl}/progress',params={"skip_current_image": str(skip_current_image)}) as response:
                 return SDProgress( **(await response.json()) )
+
     
     async def txt2img(self, params: txt2img_params) -> WebUIApiResult:
         payload = params.to_dict()

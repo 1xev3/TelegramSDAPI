@@ -5,13 +5,18 @@ from sqlalchemy.orm import Session
 from database import models
 
 from time import time
+from io import BytesIO
+from PIL import Image
+
+from aiogram import Bot
 from aiogram.utils.text_decorations import markdown_decoration as md
 from aiogram.types import InlineKeyboardButton as IKB, InlineKeyboardMarkup, Message, CallbackQuery, BufferedInputFile
 
-from functional.sd_api import WebUIApi, APIQueue, StyleFactory
+from functional.sd_api import WebUIApi, WebUIApiResult, APIQueue, StyleFactory
 from functional.sd_api import txt2img_params, img2img_params
 
-from .shared import ImageToBytes, KBCustom
+from .shared import ImageToBytes, KBCustom, RoundTo8
+from .processors import default_processor, txt2img_processor, img2img_processor
 from . import errors
 
 from dataclasses import dataclass
@@ -25,7 +30,6 @@ logger = logging.getLogger("telebot")
 api = WebUIApi("", "") #configured in app.py
 queue = APIQueue()
 styles = StyleFactory()
-
 
 
 IMAGE_KEYBOARD = KBCustom(["⬆️ Апскейл","↪️ Повтор","♻️ Варианты","📜 DeepBooru", "✨ Стиль"],
@@ -104,10 +108,9 @@ async def config_command_callaback(msg: CallbackQuery, callback_data: cb_models.
 
     await msg.answer()
 
-        
+
 async def any_msg(msg:Message, db:Session):
     user = get_user(db, msg.from_user.id)
-
     settings = user.settings
 
     text = msg.text or msg.caption or ""
@@ -116,87 +119,96 @@ async def any_msg(msg:Message, db:Session):
 
     style = styles.stylize(settings["quality_tag"], text)
 
-    #command processor
-    class __processor():
-        def __init__(self, initial_message):
-            #shared parameters
-            self.start_time = time()
-            self.update_message = initial_message
+    params = txt2img_params()
+    params.prompt = style.positive
+    params.negative_prompt = style.negative
+    params.steps = settings["steps"]
+    params.batch_size = 4 #settings["n_iter"]
+    params.sampler_name = settings["sampler"]
 
-        #prevent message is not modified error
-        async def __update_message(self, text):
-            if self.update_message.text != text:
-                self.update_message = await self.update_message.edit_text(text, parse_mode="MarkdownV2")
-
-        async def process(self):
-            self.start_time = time()
-            self.update_message = await msg.answer("Generation...")
-
-            params = txt2img_params()
-            params.prompt = style.positive
-            params.negative_prompt = style.negative
-            params.steps = settings["steps"]
-            params.batch_size = 4 #settings["n_iter"]
-            params.sampler_name = settings["sampler"]
-            
-            try:
-                result1 = await api.txt2img(params)
-
-                if not result1:
-                    await msg.answer("No data from server?")
-                    return
-
-                kb = IMAGE_KEYBOARD
-                markup = InlineKeyboardMarkup(inline_keyboard=kb)
-
-                it = 0
-                for img in result1.images:
-                    seed = result1.info['all_seeds'][it]
-                    caption = f"`{style.full_clear}`"
-                    caption = caption[:1023] if len(caption) > 1023 else caption
-                
-                    await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
-                    img.close()
-                    it += 1
-            
-            except Exception as E:
-                await msg.answer(f"Error: {E}")
-
-        
-        async def update(self):
-            status = await api.get_progress()
-
-            progress = status.progress
-            negative_progress = 1 - progress
-            
-            waiting = (progress == 0.0)
-            progress_str = f"`{int(progress*100)}\%`" if (not waiting) else "`Waiting`"
-            
-            count = 25
-            progress_bar = f'\[{"━"*int(progress*count)}{ md.spoiler("━"*int(negative_progress*count)) }\]'
-
-            message = f"{md.quote('Generating...')} "\
-                    f"{progress_str}\n"\
-                    f"{progress_bar if not waiting else ''}\n"
-            await self.__update_message(message)
-
-        async def end(self):
-            execution_time = time() - self.start_time
-            await self.__update_message(f"Done in `{int(execution_time)}` seconds")
-
-    #register
     update_message = await msg.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
-    proc = __processor(initial_message=update_message)
+    processor = txt2img_processor(api, queue, params, initial_message=update_message)
+
+    async def proc_end(result: WebUIApiResult):
+        execution_time = processor.get_process_time()
+        await processor.msg_update(f"Done in `{int(execution_time)}` seconds")
+
+        if not result:
+            await processor.msg_update("Error. No data from server")
+            return
+
+        markup = InlineKeyboardMarkup(inline_keyboard=IMAGE_KEYBOARD)
+
+        for it, img in enumerate(result.images):
+            seed = result.info['all_seeds'][it]
+            caption = f"`{style.full_clear}`"
+        
+            await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
+            img.close()
+
+    processor.set_end_func(proc_end)
 
     try:
-        #put in queue
-        await queue.put( queue.Params(
-            user_id=user.telegram_id,
-            func=proc.process,
-            update_func=proc.update, #no ()! only coroutine fabric!
-            end_func=proc.end,
-        ))
-    except errors.MaxQueueReached as E:
+        await processor.to_queue(user.telegram_id)
+    except errors.MaxQueueReached:
         await update_message.edit_text("You reached queue limit. Please wait before using it again")
         logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 
+
+async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptions, db: Session, bot: Bot):
+    user = get_user(db, msg.from_user.id)
+    settings = user.settings
+    mode = callback_data.mode
+
+    image = msg.message.document
+    if msg.message.photo and len(msg.message.photo > 0):
+        image = msg.message.photo[0]
+
+    text = msg.message.text or msg.message.caption or ""
+
+    style = styles.stylize(settings["quality_tag"], text)
+
+    with BytesIO() as file_in_io:
+        await bot.download(image, destination=file_in_io)
+        file_in_io.seek(0)
+        with Image.open(file_in_io) as pil_img:
+            width, height = pil_img.size
+            width = RoundTo8(width)
+            height = RoundTo8(height)
+
+            if mode == "upscale":
+                params = img2img_params()
+                params.width = width
+                params.height = height
+                params.prompt = style.positive
+                params.negative_prompt = style.negative
+                params.init_images = [pil_img.copy()]
+                # params.script_name = "SD Upscale"
+                # params.script_args=["_", 64, upscaler_id, 2]
+
+                update_message = await msg.message.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
+                processor = img2img_processor(api, queue, params, initial_message=update_message)
+
+                async def proc_end(result: WebUIApiResult):
+                    assert result
+                    await processor.msg_update(f"Done in `{int(processor.get_process_time())}` seconds")
+                    markup = InlineKeyboardMarkup(inline_keyboard=IMAGE_KEYBOARD)
+                    for it, img in enumerate(result.images):
+                        await msg.message.answer_document(document=BufferedInputFile(ImageToBytes(img), f"{result.info['all_seeds'][it]}.png"),caption=f"`{style.full_clear}`", parse_mode="MarkdownV2", reply_markup=markup)
+                        img.close()
+
+                processor.set_end_func(proc_end)
+
+                try: await processor.to_queue(user.telegram_id)
+                except errors.MaxQueueReached:
+                    await update_message.edit_text("You reached queue limit. Please wait before using it again")
+                    logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
+
+
+        
+                
+
+                
+
+    await msg.answer()
+        

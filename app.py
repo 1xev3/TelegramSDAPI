@@ -39,6 +39,7 @@ API_URL = cfg.API_URL.split(":")
 crud.api.configure(API_URL[0], API_URL[1])
 crud.api.update_models()
 crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10,1)
+bot = Bot(cfg.TOKEN, parse_mode=ParseMode.HTML)
 
 #styles register
 crud.styles.add_new(
@@ -72,11 +73,13 @@ async def command_start_handler(msg: Message, db:Session) -> None:
     logger.info(f"Recieved start command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.start_command(msg, db)
 
+
 @rp.message(Command("settings"))
 @db_session
 async def _(msg: Message, db:Session) -> None:
     logger.info(f"Recieved settings command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.config_command(msg, db)
+
 
 @rp.message(F.text) #yep any message will cause generation
 @db_session
@@ -84,16 +87,24 @@ async def echo_handler(msg: types.Message, db:Session) -> None:
     logger.info(f"Recieved generation command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.any_msg(msg, db)
 
+
 @rp.callback_query(cb_models.MenuOptions.filter(F.mode == "scale"))
 @db_session
-async def _(query: CallbackQuery, callback_data: cb_models.MenuOptions, db:Session):
+async def scale_query(query: CallbackQuery, callback_data: cb_models.MenuOptions, db:Session):
     await crud.config_command_callaback(query, callback_data, db)
 
-@rp.error()
-async def error_handler(event: ErrorEvent):
-    logger.critical("Critical error caused by %s", event.exception, exc_info=True)
-    # do something with error
-    ...
+
+@rp.callback_query(cb_models.ImageOptions.filter())
+@db_session
+async def img_reaction_query(query: CallbackQuery, callback_data: cb_models.ImageOptions, db:Session):
+    await crud.image_reaction(query, callback_data, db, bot)
+
+
+
+# @rp.error()
+# async def error_handler(event: ErrorEvent):
+#     logger.critical("Critical error caused by %s", event.exception, exc_info=True)
+#     # do something with error
 
 
 async def main():
@@ -105,7 +116,6 @@ async def main():
     loop = asyncio.get_event_loop()
     loop.create_task(crud.queue.process_requests())
 
-    bot = Bot(cfg.TOKEN, parse_mode=ParseMode.HTML)
     await bot.get_updates(offset=-1)#skip updates
     await dp.start_polling(bot)
 
