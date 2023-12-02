@@ -1,11 +1,17 @@
 from PIL import Image
 from io import BytesIO
 from math import floor
+
 import base64
+import logging
 
 from aiogram import types
 
+from database import models
+from sqlalchemy.orm import Session
 
+
+logger = logging.getLogger("telebot")
 
 def ImageToBytes(img: Image.Image):
     img_byte_arr = BytesIO()
@@ -39,3 +45,27 @@ def RoundTo8(num):
     else:
         multiple = round(num/8)
         return multiple * 8
+    
+def ConvertRatioToSize(base_size:int, ratio_x:float, ratio_y:float) -> tuple[int, int]:
+    if ratio_x > ratio_y:
+        ratio = ratio_x / ratio_y
+        return (RoundTo8(base_size*ratio), RoundTo8(base_size))
+    elif ratio_x < ratio_y:
+        ratio = ratio_y / ratio_x
+        return (RoundTo8(base_size), RoundTo8(base_size*ratio))
+    else:
+        ratio = ratio_x / ratio_y
+        return (RoundTo8(base_size*ratio), RoundTo8(base_size*ratio))
+    
+def get_user(db: Session, telegram_id: int) -> models.User:
+    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
+    
+    #create new user
+    if not user:
+        logger.info(f"Created new user [{telegram_id}]")
+        user = models.User(telegram_id=telegram_id)
+        user.settings = models.UserSettings()
+        db.add(user)
+        db.commit()
+    
+    return user

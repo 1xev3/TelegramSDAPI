@@ -2,11 +2,12 @@ import asyncio
 from asyncio import run as async_run
 from functools import wraps
 
-from aiogram import Bot, Dispatcher, Router, types, F
+from dataclasses import dataclass
+
+from aiogram import Bot, Dispatcher, Router, F, types
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, ErrorEvent, CallbackQuery
-from aiogram.utils.markdown import hbold
+from aiogram.filters import CommandStart
+from aiogram.types import Message
 
 import logging
 from sys import stdout
@@ -15,8 +16,9 @@ from sqlalchemy.orm import Session
 from database import DB_INITIALIZER
 import config
 
-from callbacks import models as cb_models
+from functional.settings_router import SettingsMaster
 import functional.crud as crud
+from callbacks import models as cb_models
 
 ## INIT ##
 logger = logging.getLogger("telebot")
@@ -39,7 +41,7 @@ API_URL = cfg.API_URL.split(":")
 crud.api.configure(API_URL[0], API_URL[1])
 crud.api.update_models()
 crud.queue.configure(cfg.QUEUE_LIMIT, {}, 10,1)
-bot = Bot(cfg.TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(cfg.TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 
 #styles register
 crud.styles.add_new(
@@ -62,8 +64,10 @@ def db_session(func):
     return wrapper
 
 
+
 #init dispatcher
 rp = Router()
+settings_master = SettingsMaster("settings", SessionLocal, 3, rp)
 
 
 #Commands itself
@@ -73,14 +77,6 @@ async def command_start_handler(msg: Message, db:Session) -> None:
     logger.info(f"Recieved start command from {msg.from_user.id} - {msg.from_user.full_name}")
     await crud.start_command(msg, db)
 
-
-@rp.message(Command("settings"))
-@db_session
-async def _(msg: Message, db:Session) -> None:
-    logger.info(f"Recieved settings command from {msg.from_user.id} - {msg.from_user.full_name}")
-    await crud.config_command(msg, db)
-
-
 @rp.message(F.text) #yep any message will cause generation
 @db_session
 async def echo_handler(msg: types.Message, db:Session) -> None:
@@ -88,24 +84,16 @@ async def echo_handler(msg: types.Message, db:Session) -> None:
     await crud.any_msg(msg, db)
 
 
-@rp.callback_query(cb_models.MenuOptions.filter(F.mode == "scale"))
-@db_session
-async def scale_query(query: CallbackQuery, callback_data: cb_models.MenuOptions, db:Session):
-    await crud.config_command_callaback(query, callback_data, db)
-
-
 @rp.callback_query(cb_models.ImageOptions.filter())
 @db_session
-async def img_reaction_query(query: CallbackQuery, callback_data: cb_models.ImageOptions, db:Session):
+async def img_reaction_query(query: types.CallbackQuery, callback_data: cb_models.ImageOptions, db:Session):
     await crud.image_reaction(query, callback_data, db, bot)
 
-
-
-# @rp.error()
-# async def error_handler(event: ErrorEvent):
-#     logger.critical("Critical error caused by %s", event.exception, exc_info=True)
-#     # do something with error
-
+settings_master.register_command(
+    "ratio", 
+    lambda s: f'🖥 Change aspect [{s.aspect_x} / {s.aspect_y}]', 
+    crud.ratio_setting 
+)
 
 async def main():
     dp = Dispatcher()

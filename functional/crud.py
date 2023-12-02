@@ -1,4 +1,4 @@
-import asyncio, logging
+import asyncio, logging, typing
 from functools import wraps
 
 from sqlalchemy.orm import Session
@@ -15,13 +15,12 @@ from aiogram.types import InlineKeyboardButton as IKB, InlineKeyboardMarkup, Mes
 from functional.sd_api import WebUIApi, WebUIApiResult, APIQueue, StyleFactory
 from functional.sd_api import txt2img_params, img2img_params
 
-from .shared import ImageToBytes, KBCustom, RoundTo8
+from .shared import ImageToBytes, KBCustom, RoundTo8, ConvertRatioToSize, get_user
 from .processors import default_processor, txt2img_processor, img2img_processor
 from . import errors
 
-from dataclasses import dataclass
-
 from callbacks import models as cb_models
+from functional.settings_router import SettingsMaster
 
 
 
@@ -32,24 +31,13 @@ queue = APIQueue()
 styles = StyleFactory()
 
 
+IMAGE_BASE_SIZE = RoundTo8(512)
 IMAGE_KEYBOARD = KBCustom(["⬆️ Апскейл","↪️ Повтор","♻️ Варианты","📜 DeepBooru", "✨ Стиль"],
                           [cb_models.ImageOptions(mode="upscale").pack(),
                            cb_models.ImageOptions(mode="sameprompt").pack(),
                            cb_models.ImageOptions(mode="variants").pack(),
                            cb_models.ImageOptions(mode="deepboru").pack(),
                            cb_models.ImageOptions(mode="style").pack()],2)
-
-def get_user(db: Session, telegram_id: int) -> models.User:
-    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
-    
-    #create new user
-    if not user:
-        logger.info(f"Created new user [{telegram_id}]")
-        user = models.User(telegram_id=telegram_id)
-        db.add(user)
-        db.commit()
-    
-    return user
 
 
 ############
@@ -58,55 +46,19 @@ def get_user(db: Session, telegram_id: int) -> models.User:
 async def start_command(msg:Message, db:Session):
     user = get_user(db, msg.from_user.id) #register if not exists
 
-    try:
-        await queue.put(user.telegram_id, asyncio.sleep(1))
-        await queue.put(user.telegram_id, asyncio.sleep(1))
-        await queue.put(user.telegram_id, asyncio.sleep(1))
-        await queue.put(user.telegram_id, asyncio.sleep(1))
-        # await add_request(user.telegram_id, asyncio.sleep(1))
-        # await add_request(user.telegram_id, asyncio.sleep(1))
-    except Exception as E:
-        await msg.answer(f"Error: {E}")
-        raise E
-        return
+    # try:
+    #     await queue.put(user.telegram_id, asyncio.sleep(1))
+    #     # await add_request(user.telegram_id, asyncio.sleep(1))
+    #     # await add_request(user.telegram_id, asyncio.sleep(1))
+    # except Exception as E:
+    #     await msg.answer(f"Error: {E}")
+    #     raise E
+    #     return
 
 
     await msg.answer("Hello!")
 
-def settings_keyboard():
-    kb = [
-        [
-            IKB(text="Соотношение сторон", callback_data=cb_models.MenuOptions(mode="scale").pack()), 
-            IKB(text="Количество", callback_data=cb_models.MenuOptions(mode="count").pack())
-        ],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
 
-async def config_command(msg:Message, db:Session):
-    user = get_user(db, msg.from_user.id)
-
-    markup = settings_keyboard()
-
-    await msg.answer(f"Config for user [{msg.from_user.id}]", reply_markup=markup )
-
-async def config_command_callaback(msg: CallbackQuery, callback_data: cb_models.MenuOptions, db: Session):
-    user = get_user(db, msg.from_user.id)
-
-    mode = callback_data.mode
-    if mode == "root":
-        markup = settings_keyboard()
-        await msg.message.answer("Главное меню", reply_markup=markup)
-    elif mode == "scale":
-        markup = InlineKeyboardMarkup(inline_keyboard=KBCustom(
-            ["Reverse", "Назад"],
-            [
-                cb_models.SetOptions(mode="scale", value="reverse").pack(),
-                cb_models.MenuOptions(mode="root").pack()
-            ], 
-        1))
-        await msg.message.answer("Scale", reply_markup=markup)
-
-    await msg.answer()
 
 
 async def any_msg(msg:Message, db:Session):
@@ -117,14 +69,17 @@ async def any_msg(msg:Message, db:Session):
     if len(text) < 1:
         await msg.answer("Please, provide text for generation")
 
-    style = styles.stylize(settings["quality_tag"], text)
+    style = styles.stylize(settings.quality_tag, text)
 
     params = txt2img_params()
+    width, height = ConvertRatioToSize(IMAGE_BASE_SIZE, settings.aspect_x, settings.aspect_y)
+    params.width = width
+    params.height = height
     params.prompt = style.positive
     params.negative_prompt = style.negative
-    params.steps = settings["steps"]
-    params.batch_size = 4 #settings["n_iter"]
-    params.sampler_name = settings["sampler"]
+    params.steps = settings.steps
+    params.batch_size = 1 #settings.n_iter
+    params.sampler_name = settings.sampler
 
     update_message = await msg.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
     processor = txt2img_processor(api, queue, params, initial_message=update_message)
@@ -166,7 +121,7 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
 
     text = msg.message.text or msg.message.caption or ""
 
-    style = styles.stylize(settings["quality_tag"], text)
+    style = styles.stylize(settings.quality_tag, text)
 
     with BytesIO() as file_in_io:
         await bot.download(image, destination=file_in_io)
@@ -204,11 +159,118 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
                     await update_message.edit_text("You reached queue limit. Please wait before using it again")
                     logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 
-
-        
-                
-
-                
-
     await msg.answer()
-        
+
+
+
+# async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data:list, db:Session):
+#     user = get_user(db, query.from_user.id)
+#     settings = user.settings
+
+#     prefix = data[0]
+#     mode = data[1]
+
+#     if mode == "set":
+#         if (settings.aspect_x == float(data[2])) and (settings.aspect_y == float(data[3])): #inverse if equal
+#             vx = settings.aspect_x
+#             settings.aspect_x = float(settings.aspect_y)
+#             settings.aspect_y = float(vx)
+#         else:
+#             settings.aspect_x = float(data[2])
+#             settings.aspect_y = float(data[3])
+#         db.add(settings)
+#         db.commit()
+#         db.refresh(settings)
+#     elif mode == "inverse":
+#         vx = settings.aspect_x
+#         settings.aspect_x = float(settings.aspect_y)
+#         settings.aspect_y = float(vx)
+#         db.add(settings)
+#         db.commit()
+#         db.refresh(settings)
+
+
+#     kb = []
+#     mode_buttons = []
+#     for mode in ["1:1", "16:9", "19.5:9"]:
+#         val = mode.split(":")
+#         vx = val[0]
+#         vy = val[1]
+#         if settings.aspect_x < settings.aspect_y:
+#             vx = val[1]
+#             vy = val[0]
+
+#         mode_buttons.append(
+#             IKB(text=f"{vx}:{vy}", 
+#                 callback_data=master.arg_pack(prefix, "set", vx, vy)
+#             )
+#         )
+
+#     ax = float(settings.aspect_x)
+#     ay = float(settings.aspect_y)
+
+
+#     kb.append(mode_buttons)
+#     kb.append([IKB(text="🔀 Inverse ratios", callback_data=master.arg_pack(prefix, "inverse"))])
+#     kb.append([master.back_button()])
+
+#     markup = InlineKeyboardMarkup(inline_keyboard=kb)
+#     ratio = f"`{ax}` : `{ay}`"
+#     await query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
+
+#     await query.answer()
+
+async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
+    user = get_user(db, query.from_user.id)
+    settings = user.settings
+
+    prefix = data[0]
+    mode = data[1]
+
+    if mode == "set":
+        try:
+            aspect_x = float(data[2])
+            aspect_y = float(data[3])
+        except ValueError:
+            await query.answer("Invalid input. Please enter valid numeric values.")
+            return
+
+        if (settings.aspect_x, settings.aspect_y) == (aspect_x, aspect_y):
+            settings.aspect_x, settings.aspect_y = aspect_y, aspect_x
+        else:
+            settings.aspect_x, settings.aspect_y = aspect_x, aspect_y
+        db.add(settings)
+
+    elif mode == "inverse":
+        settings.aspect_x, settings.aspect_y = settings.aspect_y, settings.aspect_x
+        db.add(settings)
+
+    db.commit()
+    db.refresh(settings)
+
+    kb = []
+    mode_buttons = []
+    for ratio in ["1/1", "16/9", "19.5/9"]:
+        vx, vy = map(float, ratio.split("/"))
+        if settings.aspect_x < settings.aspect_y:
+            vx, vy = vy, vx
+
+        true_sign = ""
+        if vx == settings.aspect_x and vy == settings.aspect_y:
+            true_sign = "✅ "
+
+        mode_buttons.append(
+            IKB(text=f"{true_sign}{vx} / {vy}", callback_data=master.arg_pack(prefix, "set", str(vx), str(vy)))
+        )
+
+    ax, ay = float(settings.aspect_x), float(settings.aspect_y)
+
+    kb.append(mode_buttons)
+    kb.append([IKB(text="🔀 Inverse ratios", callback_data=master.arg_pack(prefix, "inverse"))])
+    kb.append([master.back_button()])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    ratio = f"`{ax}` / `{ay}`"
+    await query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
+
+    await query.answer()
