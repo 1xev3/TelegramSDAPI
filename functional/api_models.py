@@ -41,7 +41,7 @@ class txt2img_params():
     do_not_save_samples = True
     do_not_save_grid = True
     eta = 0
-    denoising_strength = 0
+    denoising_strength = 0.75
     s_min_uncond = 0
     s_churn = 0
     s_tmax = 0
@@ -75,16 +75,19 @@ class txt2img_params():
     def to_dict(self):
         return {attr: getattr(self, attr) for attr in dir(self) if not callable(getattr(self, attr)) and not attr.startswith("__")}
 
+class txt2img_sdupscale_params(txt2img_params):
+    upscaler="R-ESRGAN 4x+ Anime6B"
+    overlap=64
+    upscale_factor=2
+
 class img2img_params():
-    init_images = []
+    init_images=[]
     prompt = ""
     negative_prompt = ""
     styles = []
     seed = -1
     subseed = -1
     subseed_strength = 0
-    seed_resize_from_h = -1
-    seed_resize_from_w = -1
     sampler_name = "Euler a"
     batch_size = 1
     n_iter = 1
@@ -96,13 +99,7 @@ class img2img_params():
     tiling = False
     do_not_save_samples = True
     do_not_save_grid = True
-    eta = 0
     denoising_strength = 0.4
-    s_min_uncond = 0
-    s_churn = 0
-    s_tmax = 0
-    s_tmin = 0
-    s_noise = 0
     override_settings = {}
     override_settings_restore_afterwards = True
     refiner_checkpoint = ""
@@ -119,10 +116,10 @@ class img2img_params():
     inpaint_full_res = True
     inpaint_full_res_padding = 0
     inpainting_mask_invert = 0
-    initial_noise_multiplier = 0
-    latent_mask = ""
-    sampler_index = "Euler"
-    include_init_images = False
+    # initial_noise_multiplier = 0
+    # latent_mask = ""
+    # sampler_index = "Euler"
+    # include_init_images = False
     script_name = ""
     script_args = []
     send_images = True
@@ -131,6 +128,7 @@ class img2img_params():
 
     def to_dict(self):
         self.init_images = [ImageToBase64(x) for x in self.init_images]
+        
         if self.mask is not None:
             self.mask = ImageToBase64(self.mask)
 

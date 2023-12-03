@@ -13,10 +13,10 @@ from aiogram.utils.text_decorations import markdown_decoration as md
 from aiogram.types import InlineKeyboardButton as IKB, InlineKeyboardMarkup, Message, CallbackQuery, BufferedInputFile
 
 from functional.sd_api import WebUIApi, WebUIApiResult, APIQueue, StyleFactory
-from functional.sd_api import txt2img_params, img2img_params
+from functional.api_models import txt2img_params, txt2img_sdupscale_params, img2img_params
 
 from .shared import ImageToBytes, KBCustom, RoundTo8, ConvertRatioToSize, get_user
-from .processors import default_processor, txt2img_processor, img2img_processor
+from .processors import default_processor, txt2img_processor, txt2img_sdupscale_processor, img2img_processor
 from . import errors
 
 from callbacks import models as cb_models
@@ -71,25 +71,34 @@ async def any_msg(msg:Message, db:Session):
 
     style = styles.stylize(settings.quality_tag, text)
 
-    params = txt2img_params()
+    if not settings.enable_hr:
+        params = txt2img_params()
+    else:
+        params = txt2img_sdupscale_params()
+
     width, height = ConvertRatioToSize(IMAGE_BASE_SIZE, settings.aspect_x, settings.aspect_y)
     params.width = width
     params.height = height
     params.prompt = style.positive
     params.negative_prompt = style.negative
     params.steps = settings.steps
-    params.batch_size = 1 #settings.n_iter
+    params.batch_size = 1
     params.sampler_name = settings.sampler
 
     update_message = await msg.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
-    processor = txt2img_processor(api, queue, params, initial_message=update_message)
+
+    if isinstance(params, txt2img_sdupscale_params):
+        processor = txt2img_sdupscale_processor(api, queue, params, initial_message=update_message)
+    elif isinstance(params, txt2img_params):
+        processor = txt2img_processor(api, queue, params, initial_message=update_message)
+    
 
     async def proc_end(result: WebUIApiResult):
         execution_time = processor.get_process_time()
         await processor.msg_update(f"Done in `{int(execution_time)}` seconds")
 
         if not result:
-            await processor.msg_update("Error. No data from server")
+            await processor.msg_update("Error\. No data from server")
             return
 
         markup = InlineKeyboardMarkup(inline_keyboard=IMAGE_KEYBOARD)
@@ -98,7 +107,7 @@ async def any_msg(msg:Message, db:Session):
             seed = result.info['all_seeds'][it]
             caption = f"`{style.full_clear}`"
         
-            await msg.answer_document(document= BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
+            await msg.answer_document(document=BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
             img.close()
 
     processor.set_end_func(proc_end)
@@ -138,8 +147,8 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
                 params.prompt = style.positive
                 params.negative_prompt = style.negative
                 params.init_images = [pil_img.copy()]
-                # params.script_name = "SD Upscale"
-                # params.script_args=["_", 64, upscaler_id, 2]
+                params.script_name = "SD Upscale"
+                params.script_args=["_", 64, "R-ESRGAN 4x+ Anime6B", 2]
 
                 update_message = await msg.message.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
                 processor = img2img_processor(api, queue, params, initial_message=update_message)
@@ -162,63 +171,6 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
     await msg.answer()
 
 
-
-# async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data:list, db:Session):
-#     user = get_user(db, query.from_user.id)
-#     settings = user.settings
-
-#     prefix = data[0]
-#     mode = data[1]
-
-#     if mode == "set":
-#         if (settings.aspect_x == float(data[2])) and (settings.aspect_y == float(data[3])): #inverse if equal
-#             vx = settings.aspect_x
-#             settings.aspect_x = float(settings.aspect_y)
-#             settings.aspect_y = float(vx)
-#         else:
-#             settings.aspect_x = float(data[2])
-#             settings.aspect_y = float(data[3])
-#         db.add(settings)
-#         db.commit()
-#         db.refresh(settings)
-#     elif mode == "inverse":
-#         vx = settings.aspect_x
-#         settings.aspect_x = float(settings.aspect_y)
-#         settings.aspect_y = float(vx)
-#         db.add(settings)
-#         db.commit()
-#         db.refresh(settings)
-
-
-#     kb = []
-#     mode_buttons = []
-#     for mode in ["1:1", "16:9", "19.5:9"]:
-#         val = mode.split(":")
-#         vx = val[0]
-#         vy = val[1]
-#         if settings.aspect_x < settings.aspect_y:
-#             vx = val[1]
-#             vy = val[0]
-
-#         mode_buttons.append(
-#             IKB(text=f"{vx}:{vy}", 
-#                 callback_data=master.arg_pack(prefix, "set", vx, vy)
-#             )
-#         )
-
-#     ax = float(settings.aspect_x)
-#     ay = float(settings.aspect_y)
-
-
-#     kb.append(mode_buttons)
-#     kb.append([IKB(text="🔀 Inverse ratios", callback_data=master.arg_pack(prefix, "inverse"))])
-#     kb.append([master.back_button()])
-
-#     markup = InlineKeyboardMarkup(inline_keyboard=kb)
-#     ratio = f"`{ax}` : `{ay}`"
-#     await query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
-
-#     await query.answer()
 
 async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
     user = get_user(db, query.from_user.id)
@@ -273,4 +225,32 @@ async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data: list
     ratio = f"`{ax}` / `{ay}`"
     await query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
 
+    await query.answer()
+
+async def upscale_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
+    user = get_user(db, query.from_user.id)
+    settings = user.settings
+
+    prefix = data[0]
+    mode = data[1]
+
+    kb = []
+    if mode == "switch":
+        settings.enable_hr = not settings.enable_hr
+        db.add(settings)
+        db.commit()
+
+    kb.append([IKB(
+        text="❌ Disable" if settings.enable_hr else "✅ Enable", 
+        callback_data=master.arg_pack(prefix, "switch"))
+    ])
+    kb.append([master.back_button()])
+
+
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    await query.message.edit_text(
+        f'Upscale settings\. Currently upscale is {"✅ Enabled" if settings.enable_hr else "❌ Disabled"}', 
+        reply_markup=markup, 
+        parse_mode="MarkdownV2"
+    )
     await query.answer()

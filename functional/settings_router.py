@@ -83,7 +83,7 @@ class SettingsMaster():
     def edit_button_text(self, prefix: str, button_text:str):
         self.callbacks[prefix].button_text = button_text
     
-    def back_button(self, text:str = "❌ Back") -> IKB:
+    def back_button(self, text:str = "↪️ Back") -> IKB:
         return IKB(text=text, callback_data=self.arg_pack(self.command, "to_menu"))
 
     def __db_async_session(self,func):
@@ -117,6 +117,5 @@ class SettingsMaster():
             kb[-1].append(
                 IKB(text=text, callback_data=self.arg_pack(callback.prefix, "menu"))
             )
-        print(kb)
         
         return InlineKeyboardMarkup(inline_keyboard=kb)

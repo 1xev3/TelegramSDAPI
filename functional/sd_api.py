@@ -9,7 +9,7 @@ from typing import Coroutine, Optional
 from pydantic import ValidationError
 from dataclasses import dataclass
 
-from .api_models import txt2img_params, img2img_params, SDModel, SDProgress
+from .api_models import txt2img_params, txt2img_sdupscale_params, img2img_params, SDModel, SDProgress
 
 from . import errors
 
@@ -185,6 +185,7 @@ class WebUIApiResult:
 class WebUIApi():
     def __init__(self, host, port):
         self.models: list[SDModel] = []
+        self.upscalers = []
         self.configure(host,port)
 
     def configure(self, host, port):
@@ -258,6 +259,25 @@ class WebUIApi():
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.get(url=f'{self.baseurl}/progress',params={"skip_current_image": str(skip_current_image)}) as response:
                 return SDProgress( **(await response.json()) )
+            
+    async def get_upscalers(self):
+        if len(self.upscalers) < 1:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(url=f'{self.baseurl}/upscalers') as response:
+                    self.upscalers = await response.json()
+                    return self.upscalers
+        else:
+            return self.upscalers
+    
+    async def upscaler_by_name(self, name):
+        upscaler_id = -1
+        ids = 0
+        for v in await self.get_upscalers():
+            if v["name"] == name:
+                upscaler_id = ids
+                break
+            ids+=1
+        return upscaler_id
 
     
     async def txt2img(self, params: txt2img_params) -> WebUIApiResult:
@@ -273,3 +293,37 @@ class WebUIApi():
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.post(url=f'{self.baseurl}/img2img', json=payload) as response:
                 return await self._to_api_result(response)
+            
+    async def txt2img_sdupscale(self, params: txt2img_sdupscale_params) -> WebUIApiResult:
+        response = await self.txt2img(params)
+
+        upscaler_id = await self.upscaler_by_name(params.upscaler)
+        if upscaler_id < 0:
+            logger.error("[txt2img_sdupscale] Argument upscaler is invalid!")
+            raise ValueError("[txt2img_sdupscale] Argument upscaler is invalid!")
+
+        own_images = []
+        for img in response.images:
+            pr = img2img_params()
+            pr.init_images = [img]
+            pr.prompt = "best quality, good quality, hdr, masterpiece" #params.prompt
+            pr.negative_prompt = "(worst quality, low quality:1.4), (blurry:1.2), (lowres), (deformed, distorted, disfigured:1.3), (bad hands:1.1), jpeg compression, bad image" #params.negative_prompt
+            pr.steps = params.steps
+            pr.width = params.width
+            pr.height = params.height
+            pr.batch_size = 3
+            pr.denoising_strength = 0.25
+            pr.cfg_scale = params.cfg_scale
+
+            pr.script_name = "SD Upscale"
+            pr.script_args = ["_", params.overlap, upscaler_id, params.upscale_factor]
+
+            # for k in dir(pr):
+            #     if not k.startswith("__"):
+            #         print("\t ", k, str(getattr(pr,k)))
+
+
+            img2img_result = await self.img2img(pr)
+            own_images.append(img2img_result.image)
+
+        return WebUIApiResult(own_images,response.parameters,response.info)

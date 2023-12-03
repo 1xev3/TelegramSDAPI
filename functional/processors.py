@@ -1,4 +1,4 @@
-from functional.sd_api import txt2img_params, img2img_params, StyleFactory, WebUIApi, APIQueue
+from functional.sd_api import txt2img_params, txt2img_sdupscale_params, img2img_params, StyleFactory, WebUIApi, APIQueue
 from time import time
 
 from aiogram import types
@@ -84,6 +84,20 @@ class txt2img_processor(queue_processor):
         except Exception as E:
             await self.msg_update(f"Error: {E}")
 
+class txt2img_sdupscale_processor(queue_processor):
+    def __init__(self, api:WebUIApi, queue: APIQueue, params:txt2img_sdupscale_params, initial_message: types.Message):
+        self.params = params
+        super().__init__(api, queue, initial_message)
+
+    async def on_process(self):
+        self.start_time = time()
+        self.initial_message = await self.initial_message.answer("Generation...") #update current message to new message
+        
+        try:
+            return await self.api.txt2img_sdupscale(self.params)
+        except Exception as E:
+            await self.msg_update(f"Error: {E}")
+
 class img2img_processor(queue_processor):
     def __init__(self, api:WebUIApi, queue: APIQueue, params:img2img_params, initial_message: types.Message):
         self.params = params
@@ -93,4 +107,8 @@ class img2img_processor(queue_processor):
         self.start_time = time()
         self.initial_message = await self.initial_message.answer("Generation...") #update current message to new message
         
-        return await self.api.img2img(self.params)
+        try:
+            return await self.api.img2img(self.params)
+        except Exception as E:
+            await self.msg_update(f"Error: {E}")
+

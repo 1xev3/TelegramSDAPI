@@ -46,8 +46,8 @@ bot = Bot(cfg.TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 #styles register
 crud.styles.add_new(
     name="Основной", 
-    positive="masterpiece, absurdres, highres, {}, award winning, ultra detailed, 8k, ultra resolution",
-    negative="(disfigured:1.2), (worst quality, low quality:1.4), {}, (lowres), (deformed, distorted:1.3), bad hands, missing fingers, text, watermark, frame, poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, (mutated hands and fingers:1.3), mutant, disconnected limbs, mutation, mutated, ugly, disgusting, blurry"
+    positive="{}",
+    negative="(disfigured:1.2), (worst quality, low quality:1.4), {}"
 )
 
 
@@ -67,7 +67,7 @@ def db_session(func):
 
 #init dispatcher
 rp = Router()
-settings_master = SettingsMaster("settings", SessionLocal, 3, rp)
+settings_master = SettingsMaster("settings", SessionLocal, 2, rp)
 
 
 #Commands itself
@@ -93,6 +93,12 @@ settings_master.register_command(
     "ratio", 
     lambda s: f'🖥 Change aspect [{s.aspect_x} / {s.aspect_y}]', 
     crud.ratio_setting 
+)
+
+settings_master.register_command(
+    "upscale", 
+    lambda s: f'💎 Upscale [{"✅" if s.enable_hr else "❌"}]', 
+    crud.upscale_setting 
 )
 
 async def main():
