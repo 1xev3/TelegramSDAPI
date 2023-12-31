@@ -45,7 +45,12 @@ bot = Bot(cfg.TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 
 #styles register
 crud.styles.add_new(
-    name="Основной", 
+    name="Empty", 
+    positive="{}",
+    negative="{}"
+)
+crud.styles.add_new(
+    name="Main", 
     positive="{}",
     negative="(disfigured:1.2), (worst quality, low quality:1.4), {}"
 )
@@ -97,8 +102,14 @@ settings_master.register_command(
 
 settings_master.register_command(
     "upscale", 
-    lambda s: f'💎 Upscale [{"✅" if s.enable_hr else "❌"}]', 
+    lambda s: f'{"✅" if s.enable_hr else "❌"} Upscale', 
     crud.upscale_setting 
+)
+
+settings_master.register_command(
+    "count_setting", 
+    lambda s: f'Count [{s.n_iter}]', 
+    crud.count_setting 
 )
 
 async def main():

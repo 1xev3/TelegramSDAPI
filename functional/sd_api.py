@@ -66,8 +66,13 @@ class StyleFactory():
         prompt = prompt[:512] if len(prompt) > 512 else prompt
         neg_prompt = neg_prompt[:510] if len(neg_prompt) > 510 else neg_prompt
 
-        pos = self.styles[style_name]["positive"].format(prompt)
-        neg = self.styles[style_name]["negative"].format(neg_prompt)
+        try:
+            pos = self.styles[style_name]["positive"].format(prompt)
+            neg = self.styles[style_name]["negative"].format(neg_prompt)
+        except KeyError as E:
+            logger.error(f"Key error. Using none instead. Error: {E}")
+            pos = prompt
+            neg = neg_prompt
 
         return self.Style(pos, neg, prompt, neg_prompt)
 
@@ -308,11 +313,11 @@ class WebUIApi():
             pr.init_images = [img]
             pr.prompt = "best quality, good quality, hdr, masterpiece" #params.prompt
             pr.negative_prompt = "(worst quality, low quality:1.4), (blurry:1.2), (lowres), (deformed, distorted, disfigured:1.3), (bad hands:1.1), jpeg compression, bad image" #params.negative_prompt
-            pr.steps = params.steps
+            pr.steps = 8
             pr.width = params.width
             pr.height = params.height
             pr.batch_size = 3
-            pr.denoising_strength = 0.25
+            pr.denoising_strength = 0.3
             pr.cfg_scale = params.cfg_scale
 
             pr.script_name = "SD Upscale"

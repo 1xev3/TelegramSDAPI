@@ -34,7 +34,7 @@ class UserSettings(Base):
     seed = Column(Integer, default=-1)
     sampler = Column(String, default="Euler a")
     steps = Column(Integer, default=28)
-    quality_tag = Column(String, default='Основной')
+    quality_tag = Column(String, default='Main')
     enable_hr = Column(Boolean, default=False)
     hr_scale = Column(Integer, default=2)
     hr_denoise = Column(Float, default=0.4)

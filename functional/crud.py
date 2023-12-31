@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardButton as IKB, InlineKeyboardMarkup, Mes
 from functional.sd_api import WebUIApi, WebUIApiResult, APIQueue, StyleFactory
 from functional.api_models import txt2img_params, txt2img_sdupscale_params, img2img_params
 
-from .shared import ImageToBytes, KBCustom, RoundTo8, ConvertRatioToSize, get_user
+from .shared import ImageToBytes, KBCustom, RoundTo8, ConvertRatioToSize, get_user, clamp
 from .processors import default_processor, txt2img_processor, txt2img_sdupscale_processor, img2img_processor
 from . import errors
 
@@ -32,12 +32,9 @@ styles = StyleFactory()
 
 
 IMAGE_BASE_SIZE = RoundTo8(512)
-IMAGE_KEYBOARD = KBCustom(["⬆️ Апскейл","↪️ Повтор","♻️ Варианты","📜 DeepBooru", "✨ Стиль"],
-                          [cb_models.ImageOptions(mode="upscale").pack(),
-                           cb_models.ImageOptions(mode="sameprompt").pack(),
-                           cb_models.ImageOptions(mode="variants").pack(),
-                           cb_models.ImageOptions(mode="deepboru").pack(),
-                           cb_models.ImageOptions(mode="style").pack()],2)
+IMAGE_KEYBOARD = KBCustom(["↪️ Повтор","📜 DeepBooru"],
+                          [cb_models.ImageOptions(mode="sameprompt").pack(),
+                           cb_models.ImageOptions(mode="deepboru").pack()],2)
 
 
 ############
@@ -82,7 +79,7 @@ async def any_msg(msg:Message, db:Session):
     params.prompt = style.positive
     params.negative_prompt = style.negative
     params.steps = settings.steps
-    params.batch_size = 1
+    params.batch_size = settings.n_iter
     params.sampler_name = settings.sampler
 
     update_message = await msg.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
@@ -96,13 +93,10 @@ async def any_msg(msg:Message, db:Session):
     async def proc_end(result: WebUIApiResult):
         execution_time = processor.get_process_time()
         await processor.msg_update(f"Done in `{int(execution_time)}` seconds")
-
         if not result:
             await processor.msg_update("Error\. No data from server")
             return
-
         markup = InlineKeyboardMarkup(inline_keyboard=IMAGE_KEYBOARD)
-
         for it, img in enumerate(result.images):
             seed = result.info['all_seeds'][it]
             caption = f"`{style.full_clear}`"
@@ -117,6 +111,7 @@ async def any_msg(msg:Message, db:Session):
     except errors.MaxQueueReached:
         await update_message.edit_text("You reached queue limit. Please wait before using it again")
         logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
+
 
 
 async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptions, db: Session, bot: Bot):
@@ -139,6 +134,8 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
             width, height = pil_img.size
             width = RoundTo8(width)
             height = RoundTo8(height)
+
+            await msg.answer()
 
             if mode == "upscale":
                 params = img2img_params()
@@ -168,9 +165,88 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
                     await update_message.edit_text("You reached queue limit. Please wait before using it again")
                     logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 
-    await msg.answer()
+            elif mode == "sameprompt":
+                if not settings.enable_hr:
+                    params = txt2img_params()
+                else:
+                    params = txt2img_sdupscale_params()
+
+                width, height = ConvertRatioToSize(IMAGE_BASE_SIZE, settings.aspect_x, settings.aspect_y)
+                params.width = width
+                params.height = height
+                params.prompt = style.positive
+                params.negative_prompt = style.negative
+                params.steps = settings.steps
+                params.batch_size = settings.n_iter
+                params.sampler_name = settings.sampler
+
+                update_message = await msg.message.answer(f"Placed in queue: `{queue.human_size()}`", parse_mode="MarkdownV2")
+                msg = msg.message
+                
+                if isinstance(params, txt2img_sdupscale_params):
+                    processor = txt2img_sdupscale_processor(api, queue, params, initial_message=update_message)
+                elif isinstance(params, txt2img_params):
+                    processor = txt2img_processor(api, queue, params, initial_message=update_message)
+
+                async def proc_end(result: WebUIApiResult):
+                    execution_time = processor.get_process_time()
+                    await processor.msg_update(f"Done in `{int(execution_time)}` seconds")
+                    if not result:
+                        await processor.msg_update("Error\. No data from server")
+                        return
+                    markup = InlineKeyboardMarkup(inline_keyboard=IMAGE_KEYBOARD)
+                    for it, img in enumerate(result.images):
+                        seed = result.info['all_seeds'][it]
+                        caption = f"`{style.full_clear}`"
+                    
+                        await msg.answer_document(document=BufferedInputFile(ImageToBytes(img), f"{seed}.png"),caption=caption, parse_mode="MarkdownV2", reply_markup=markup)
+                        img.close()
+
+                processor.set_end_func(proc_end)
+
+                try:
+                    await processor.to_queue(user.telegram_id)
+                except errors.MaxQueueReached:
+                    await update_message.edit_text("You reached queue limit. Please wait before using it again")
+                    logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 
 
+async def count_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
+    user = get_user(db, query.from_user.id)
+    settings = user.settings
+
+    prefix = data[0]
+    mode = data[1]
+
+    if mode == "add":
+        try: amount = int(data[2])
+        except ValueError: 
+            await query.answer("Invalid input. Please enter valid numeric values.") 
+            return
+        
+        new_value = clamp(settings.n_iter+amount, 1, 4)
+        if new_value == settings.n_iter:
+            await query.answer()
+            return #no need to save
+
+        settings.n_iter = new_value
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
+    #Menu
+    kb = []
+    kb.append([
+        IKB(text="-2", callback_data=master.arg_pack(prefix, "add", "-2")),
+        IKB(text="-1", callback_data=master.arg_pack(prefix, "add", "-1")),
+        IKB(text="+1", callback_data=master.arg_pack(prefix, "add", "1")),
+        IKB(text="+2", callback_data=master.arg_pack(prefix, "add", "2"))
+    ])
+    kb.append([master.back_button()])
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    await query.message.edit_text(f"Current image generation count: `{settings.n_iter}` / `4`", reply_markup=markup, parse_mode="MarkdownV2")
+
+    await query.answer()
 
 async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
     user = get_user(db, query.from_user.id)

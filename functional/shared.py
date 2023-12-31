@@ -69,3 +69,6 @@ def get_user(db: Session, telegram_id: int) -> models.User:
         db.commit()
     
     return user
+
+def clamp(number, min, max):
+    return min if number < min else max if number> max else number
