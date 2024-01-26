@@ -1,5 +1,6 @@
 import asyncio, logging, typing
 from functools import wraps
+from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
 from database import models
@@ -211,122 +212,147 @@ async def image_reaction(msg: CallbackQuery, callback_data: cb_models.ImageOptio
                     logger.info(f"User {msg.from_user.full_name} with ID:[{msg.from_user.id}] reached queue limit")
 
 
+
+
+
+class CommandHandler(ABC):
+    def __init__(self, master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
+        self.master = master
+        self.query = query
+        self.data = data
+        self.db = db
+        self.user = get_user(db, query.from_user.id)
+        self.settings = self.user.settings
+        self.prefix = data[0]
+        self.mode = data[1]
+
+    def db_save_changes(self):
+        self.db.add(self.settings)
+        self.db.commit()
+        self.db.refresh(self.settings)
+
+    @abstractmethod
+    async def handle(self):
+        pass
+
+class CountHandler(CommandHandler):
+    async def add(self, amount: int):
+        new_value = clamp(self.settings.n_iter+amount, 1, 4)
+        if new_value == self.settings.n_iter:
+            await self.query.answer()
+            return #no need to update and save
+
+        self.settings.n_iter = new_value
+        self.db_save_changes()
+        await self.menu()
+
+    async def menu(self):
+        master = self.master
+        prefix = self.prefix
+        kb = []
+        kb.append([
+            IKB(text="-2", callback_data=master.arg_pack(prefix, "add", "-2")),
+            IKB(text="-1", callback_data=master.arg_pack(prefix, "add", "-1")),
+            IKB(text="+1", callback_data=master.arg_pack(prefix, "add", "1")),
+            IKB(text="+2", callback_data=master.arg_pack(prefix, "add", "2"))
+        ])
+        kb.append([master.back_button()])
+        markup = InlineKeyboardMarkup(inline_keyboard=kb)
+        await self.query.message.edit_text(f"Current image generation count: `{self.settings.n_iter}` / `4`", reply_markup=markup, parse_mode="MarkdownV2")
+
+        await self.query.answer()
+
+    async def handle(self):
+        match self.mode:
+            case "add":
+                await self.add(amount=int(self.data[2]))
+            case _:
+                await self.menu()
+
 async def count_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
-    user = get_user(db, query.from_user.id)
-    settings = user.settings
+    await CountHandler(master, query, data, db).handle()
 
-    prefix = data[0]
-    mode = data[1]
 
-    if mode == "add":
-        try: amount = int(data[2])
-        except ValueError: 
-            await query.answer("Invalid input. Please enter valid numeric values.") 
-            return
-        
-        new_value = clamp(settings.n_iter+amount, 1, 4)
-        if new_value == settings.n_iter:
-            await query.answer()
-            return #no need to save
+class RatioHandler(CommandHandler):
+    async def set(self, aspect_x: float, aspect_y: float):
+        if (self.settings.aspect_x, self.settings.aspect_y) == (aspect_x, aspect_y):
+            self.settings.aspect_x, self.settings.aspect_y = aspect_y, aspect_x
+        else:
+            self.settings.aspect_x, self.settings.aspect_y = aspect_x, aspect_y
+        self.db_save_changes()
+    
+    async def inverse(self):
+        self.settings.aspect_x, self.settings.aspect_y = self.settings.aspect_y, self.settings.aspect_x
+        self.db_save_changes()
+    
+    async def menu(self):
+        kb = []
+        mode_buttons = []
+        for ratio in ["1/1", "16/9", "19.5/9"]:
+            vx, vy = map(float, ratio.split("/"))
+            if  self.settings.aspect_x <  self.settings.aspect_y:
+                vx, vy = vy, vx
 
-        settings.n_iter = new_value
-        db.add(settings)
-        db.commit()
-        db.refresh(settings)
+            true_sign = ""
+            if vx ==  self.settings.aspect_x and vy ==  self.settings.aspect_y:
+                true_sign = "✅ "
 
-    #Menu
-    kb = []
-    kb.append([
-        IKB(text="-2", callback_data=master.arg_pack(prefix, "add", "-2")),
-        IKB(text="-1", callback_data=master.arg_pack(prefix, "add", "-1")),
-        IKB(text="+1", callback_data=master.arg_pack(prefix, "add", "1")),
-        IKB(text="+2", callback_data=master.arg_pack(prefix, "add", "2"))
-    ])
-    kb.append([master.back_button()])
-    markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    await query.message.edit_text(f"Current image generation count: `{settings.n_iter}` / `4`", reply_markup=markup, parse_mode="MarkdownV2")
+            mode_buttons.append(
+                IKB(text=f"{true_sign}{vx} / {vy}", callback_data= self.master.arg_pack( self.prefix, "set", str(vx), str(vy)))
+            )
 
-    await query.answer()
+        ax, ay = float(self.settings.aspect_x), float(self.settings.aspect_y)
+
+        kb.append(mode_buttons)
+        kb.append([IKB(text="🔀 Inverse ratios", callback_data=self.master.arg_pack(self.prefix, "inverse"))])
+        kb.append([self.master.back_button()])
+
+        markup = InlineKeyboardMarkup(inline_keyboard=kb)
+        ratio = f"`{ax}` / `{ay}`"
+        await self.query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
+
+        await self.query.answer()
+
+    async def handle(self):
+        match self.mode:
+            case "set":
+                await self.set(aspect_x=float(self.data[2]), aspect_y=float(self.data[3]))
+            case "inverse":
+                await self.inverse()
+        await self.menu()
 
 async def ratio_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
-    user = get_user(db, query.from_user.id)
-    settings = user.settings
+    await RatioHandler(master, query, data, db).handle()
 
-    prefix = data[0]
-    mode = data[1]
 
-    if mode == "set":
-        try:
-            aspect_x = float(data[2])
-            aspect_y = float(data[3])
-        except ValueError:
-            await query.answer("Invalid input. Please enter valid numeric values.")
-            return
 
-        if (settings.aspect_x, settings.aspect_y) == (aspect_x, aspect_y):
-            settings.aspect_x, settings.aspect_y = aspect_y, aspect_x
-        else:
-            settings.aspect_x, settings.aspect_y = aspect_x, aspect_y
-        db.add(settings)
 
-    elif mode == "inverse":
-        settings.aspect_x, settings.aspect_y = settings.aspect_y, settings.aspect_x
-        db.add(settings)
+class UpscaleHandler(CommandHandler):
+    async def mode_switch(self):
+        self.settings.enable_hr = not self.settings.enable_hr
+        self.db_save_changes()
 
-    db.commit()
-    db.refresh(settings)
+    async def menu(self):
+        kb = []
+        kb.append([IKB(
+            text="❌ Disable" if self.settings.enable_hr else "✅ Enable", 
+            callback_data=self.master.arg_pack(self.prefix, "switch"))
+        ])
+        kb.append([self.master.back_button()])
 
-    kb = []
-    mode_buttons = []
-    for ratio in ["1/1", "16/9", "19.5/9"]:
-        vx, vy = map(float, ratio.split("/"))
-        if settings.aspect_x < settings.aspect_y:
-            vx, vy = vy, vx
-
-        true_sign = ""
-        if vx == settings.aspect_x and vy == settings.aspect_y:
-            true_sign = "✅ "
-
-        mode_buttons.append(
-            IKB(text=f"{true_sign}{vx} / {vy}", callback_data=master.arg_pack(prefix, "set", str(vx), str(vy)))
+        markup = InlineKeyboardMarkup(inline_keyboard=kb)
+        await self.query.message.edit_text(
+            f'Upscale settings\. Currently upscale is {"✅ Enabled" if self.settings.enable_hr else "❌ Disabled"}', 
+            reply_markup=markup, 
+            parse_mode="MarkdownV2"
         )
+        await self.query.answer()
 
-    ax, ay = float(settings.aspect_x), float(settings.aspect_y)
-
-    kb.append(mode_buttons)
-    kb.append([IKB(text="🔀 Inverse ratios", callback_data=master.arg_pack(prefix, "inverse"))])
-    kb.append([master.back_button()])
-
-    markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    ratio = f"`{ax}` / `{ay}`"
-    await query.message.edit_text(f"Current ratio: {ratio}", reply_markup=markup, parse_mode="MarkdownV2")
-
-    await query.answer()
+    async def handle(self):
+        match self.mode:
+            case "switch":
+                await self.mode_switch()
+        await self.menu()
 
 async def upscale_setting(master: SettingsMaster, query: CallbackQuery, data: list, db: Session):
-    user = get_user(db, query.from_user.id)
-    settings = user.settings
-
-    prefix = data[0]
-    mode = data[1]
-
-    kb = []
-    if mode == "switch":
-        settings.enable_hr = not settings.enable_hr
-        db.add(settings)
-        db.commit()
-
-    kb.append([IKB(
-        text="❌ Disable" if settings.enable_hr else "✅ Enable", 
-        callback_data=master.arg_pack(prefix, "switch"))
-    ])
-    kb.append([master.back_button()])
-
-
-    markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    await query.message.edit_text(
-        f'Upscale settings\. Currently upscale is {"✅ Enabled" if settings.enable_hr else "❌ Disabled"}', 
-        reply_markup=markup, 
-        parse_mode="MarkdownV2"
-    )
-    await query.answer()
+    await UpscaleHandler(master, query, data, db).handle()

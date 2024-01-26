@@ -313,7 +313,7 @@ class WebUIApi():
             pr.init_images = [img]
             pr.prompt = "best quality, good quality, hdr, masterpiece" #params.prompt
             pr.negative_prompt = "(worst quality, low quality:1.4), (blurry:1.2), (lowres), (deformed, distorted, disfigured:1.3), (bad hands:1.1), jpeg compression, bad image" #params.negative_prompt
-            pr.steps = 8
+            pr.steps = 15
             pr.width = params.width
             pr.height = params.height
             pr.batch_size = 3
